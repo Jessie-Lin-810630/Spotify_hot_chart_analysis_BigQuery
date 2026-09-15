@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Scrapes Spotify Charts (weekly regional CSVs) and the Spotify Web API to analyze top Japan / South Korea / Global tracks (chart data currently covers 2025-10 ~ 2026-09). Originally a ccClub Python Fall 2025 project written in Google Colab; it has since been moved to GitHub and is being run locally. The chart ETL (extract → clean → load to BigQuery) has been migrated from notebooks to plain scripts in `src/`; the Spotify Web API and visualization steps are still Jupyter notebooks (N02–N05). There is no Python package, build step, or test suite. Code comments and notes are in Traditional Chinese.
+Scrapes Spotify Charts (weekly regional CSVs) and the Spotify Web API to analyze top Japan / South Korea / Global tracks (chart data currently covers 2025-10 ~ 2026-09). Originally a ccClub Python Fall 2025 project written in Google Colab; it has since been moved to GitHub and is being run locally. The chart ETL (extract → clean → load to BigQuery) has been migrated from notebooks to plain scripts in `src/`; analysis is done with BigQuery SQL views (`bq_table_and_view/`) visualized in Data Studio. The Spotify Web API steps exist only in the deprecated notebooks (N02–N04). There is no Python package, build step, or test suite. Code comments and notes are in Traditional Chinese.
 
 ## Environment & tooling
 
 - Always invoke `./.venv/bin/python` (e.g. `./.venv/bin/python -m pip install -r requirements.txt`) — never the system python.
 - Run scripts from the project root: `./.venv/bin/python src/<script>.py`. Parameters are hardcoded in each script's `if __name__ == "__main__":` block (the user prefers this over `argparse`).
 - Scripts log via `logging` (`logger = logging.getLogger(__name__)`, `logging.basicConfig` only inside `__main__`) — use `logger.info/warning/error/exception`, not `print`.
-- Notebooks (N02–N05) are executed manually by a human in Jupyter with the kernel "Python 3.12.8 (venv-bigquery-pipeline)".
-  - `requirements.txt` does not list `matplotlib` or `seaborn`, which N05 imports (only `matplotlib-inline` is present). Don't install them — visualization is planned to move to Data Studio.
+- Notebooks N01–N05 (`src/in_colab(deprecated)/`) are deprecated — see "Deprecated notebooks" below.
+  - `requirements.txt` does not list `matplotlib` or `seaborn`, which N05 imports (only `matplotlib-inline` is present). Don't install them — visualization has moved to Data Studio.
 - Notebook outputs are stripped on commit via `nbstripout` (`.gitattributes` sets `filter=nbstripout` for `*.ipynb`; the filter is configured in local git config against `.venv/bin/python -m nbstripout`). Don't commit notebook outputs.
 - pre-commit (`.pre-commit-config.yaml`): trailing-whitespace, end-of-file-fixer, check-yaml, detect-private-key, `no-commit-to-branch` (blocks commits to `main` — work on a feature branch), check-added-large-files (1000 KB), `ruff --fix`, `ruff-format`.
   - Run all hooks: `pre-commit run --all-files`
@@ -38,7 +38,19 @@ Scrapes Spotify Charts (weekly regional CSVs) and the Spotify Web API to analyze
    - `uploaded_at` = run time (UTC); `previous_rank = -1` (new entry) is kept as-is
    - Its `__main__` block is a commented-out test harness; the pipeline entry point is L.
 3. **`l_load_to_bigquery.py`** (Load) — `l_load_to_bigquery(df, region)` loads `df` into a temporary `spotify_data._staging_<table>_<random>` table (`WRITE_TRUNCATE`), runs `MERGE ... ON ID` into the region's table (`REGION_TABLES`: `jp`→`japan_chart`, `kr`→`korea_chart`, `global`→`global_chart`; update all columns when matched, insert otherwise), then deletes the staging table in `finally`. `__main__` runs T → L for every region. Re-running is idempotent (upsert).
-   - `SCHEMA` must stay identical (names and order) to T's `SCHEMA_COLUMNS` and to `spotify_weekly_chart_schema.md`, which defines the manually created tables. Tables are partitioned on `date_interval_end`; the MERGE currently has no partition filter (acceptable at current data size).
+   - `SCHEMA` must stay identical (names and order) to T's `SCHEMA_COLUMNS` and to `bq_table_and_view/spotify_weekly_chart_schema.md`, which defines the manually created tables. Tables are partitioned on `date_interval_end`; the MERGE currently has no partition filter (acceptable at current data size).
+
+## BigQuery views (`bq_table_and_view/`)
+
+SQL is kept in Markdown and run manually by the user in the BigQuery console (don't execute it). All views live in `spotify_data`; create them in document order because views depend on each other.
+
+- **`analysis_sql_all.md`** — `v_all_*`, per-region dashboards (one Data Studio report with a single-select `region` filter; multi-select would sum numbers across regions). `v_all_base` UNION ALLs the three tables (`SELECT *`, relies on identical schemas) and everything downstream is computed per `region` (`PARTITION BY` / `GROUP BY region`).
+  - `v_all_base`: 2026 only (`date_interval_end >= 2026-01-01`), `rank_int = SAFE_CAST(rank AS INT64)` (`rank` is STRING in the tables — never sort/compare it raw), `week_num` = days since 2026-01-01 ÷ 7 + 1 (2026-01-01 is a Thursday = w1).
+  - `v_all_base_artist`: `artist_names` split on `,` + `TRIM`; collaborations count once per artist.
+  - Definitions agreed with the user: "longest on chart" = distinct weeks on chart in 2026 (ties broken by 2026 total streams); KPI "longest track weeks" = max `weeks_on_chart` over all 2026 rows (not just the latest week, because `weeks_on_chart` resets when a track drops off); 2-2 Top 5 excludes tracks that ever reached rank 1.
+- **`analysis_sql_cross_region.md`** — `v_all_cross_*`, cross-region analysis ported from N05 (separate Data Studio page, no `region` filter). A `period` column (`ytd_2026` / `latest_week`) is switched by a single-select filter.
+  - `v_all_cross_venn`: one row per period × region set (3 single + 4 intersections). `exclusive_track_count` = tracks on exactly those regions (7 rows sum to distinct tracks); `inclusive_track_count` = tracks on at least those regions (not summable). The Data Studio Venn community viz can't draw 3 sets, so it is shown as a bar chart of `exclusive_track_count`.
+  - `v_all_cross_overlap_tracks` lists streams per region separately — Global streams already include JP/KR listeners, so don't sum across regions.
 
 ## Deprecated notebooks (`src/in_colab(deprecated)/`)
 
