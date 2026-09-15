@@ -1,0 +1,19 @@
+repos:
+  # pre-commit hooks, 檢查程式碼本身的潔淨度
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0  # 要記得檢查實際上安裝哪個 pre-commit 版本，並對齊
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: detect-private-key
+      - id: no-commit-to-branch
+      - id: check-added-large-files # 擋住不小心 commit 的 CSV
+        args: ['--maxkb=1000']
+  # 檢查程式碼的撰寫風格
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff         # linting
+        args: [--fix]
+      - id: ruff-format  # formatting
