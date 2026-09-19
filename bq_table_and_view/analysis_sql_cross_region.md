@@ -10,18 +10,22 @@
 
 ## 共通規則
 
-- 所有物件皆為 view，建立於 `spotify_data`，命名 `v_all_cross_xxx`；皆依賴 `analysis_sql_all.md` 的 `v_all_base`。
-- 歌曲以 `track_id` 識別，一首歌在某區「上榜」= 在該期間內至少出現一週，不論週數。
-- `period` 欄位區分統計期間，Data Studio 以篩選器切換：
-  - `ytd_2026`：2026-01-01 至今（與其他 dashboard 一致）
-  - `latest_week`：最新一週（`v_all_base` 中最大的 `date_interval_end`，即 N05 的原始設計）
-- 區域顯示名稱：`Global` / `Japan` / `South Korea`；組合以 ` & ` 串接，順序固定為 Global → Japan → South Korea。
-- view 之間有相依，請**依本文件順序**建立。
+- 所有物件皆為 view，建立於同一 dataset `spotify_data`，命名原則為: `v_all_cross_xxx`。
+- `v_all_cross_xxx` 的 `cross` 表示這張表在比較三個地區之間的重疊關係，而非單一地區內部的表現。
+- 所有 view 皆從 [`analysis_sql_all.md`](/bq_table_and_view/analysis_sql_all.md) 的 `v_all_base` 往下接，不直接查基底資料表 (table)。
+- 資料範圍由 `period` 欄位區分成兩種統計期間，Data Studio 以篩選器切換：
+  - `ytd_2026`：2026-01-01 至今，與其他 dashboard 的範圍一致。
+  - `latest_week`：最新一週，即 `v_all_base` 中最大的 `date_interval_end`，也是 N05 原本採用的範圍。
+- 邏輯建模注意事項：
+  - 歌曲以 `track_id` 識別，一首歌在某區「上榜」的定義 = 在該期間內至少出現一週，不論週數，也不論名次。
+  - 地區的顯示名稱改用 `Global` / `Japan` / `South Korea`，與基底資料表的 `global` / `jp` / `kr` 不同。
+  - 地區組合以 ` & ` 串接，順序固定為 Global → Japan → South Korea，例如 `Global & Japan`。
+- view 表之間有相依，請**依本文件順序**建立。
 
 ## View 相依關係
 
 ```
-v_all_base
+v_all_base (view)
 └── v_all_cross_scoped
     └── v_all_cross_track_membership
         ├── v_all_cross_venn
@@ -29,13 +33,24 @@ v_all_base
         └── v_all_cross_three_region_rank_history（另 JOIN v_all_base）
 ```
 
+### View 業務語意初步說明
+
+| view 表名稱 | 語意 | 維度與列的顆粒度 |
+|------------|------|-----|
+| v_all_cross_scoped | 把 `v_all_base` 依兩種統計期間 (`ytd_2026`、`latest_week`) 各展開一份的週榜單總集<br>屬於最新一週的資料列會同時出現在兩個期間中 | 維度：期間+歌+週+地區；<br>列的顆粒度：每1個期間每1個地區每1週每1首屬1列 |
+| v_all_cross_track_membership | 一首歌在某個統計期間裡，究竟在哪幾個地區上過榜 (回答「這首歌是只紅一地，還是能跨地區通吃」) | 維度：期間+歌；<br>列的顆粒度：每1個期間每1首屬1列 |
+| v_all_cross_venn | 某個統計期間裡，每一種地區集合 (3 個單區 + 4 個交集) 各自涵蓋多少首歌 (回答「三個市場的口味有多少重疊」) | 維度：期間+地區集合；<br>列的顆粒度：每1個期間每1種地區集合屬1列，故每1個期間貢獻 7 列 |
+| v_all_cross_overlap_tracks | 某個統計期間裡，至少在 2 個地區都上過榜的歌曲清單，附上它在各區的最佳名次、streams 與在榜週數 (回答「跨地區通吃的歌，在各地紅的程度是否一致」) | 維度：期間+歌；<br>列的顆粒度：每1個期間每1首屬1列 |
+| v_all_cross_three_region_rank_history | 三區都上過榜的歌曲，在 2026 年每一週於各地的名次走勢 (回答「同一首歌在三個市場的熱度是同步起落，還是一地先紅、他地後跟」) | 維度：期間+歌+地區+週；<br>列的顆粒度：每1個期間每1首每1個地區每1週屬1列 |
+
 ---
 
 ## 0. 共用 views
 
-### 0-1. `v_all_cross_scoped`：依統計期間展開的榜單列
+### 0-1. `v_all_cross_scoped`
 
-同一列資料若屬於最新一週，會在 `ytd_2026` 與 `latest_week` 各出現一次。
+- 語意：把 `v_all_base` 依兩種統計期間各展開一份的週榜單總集。屬於最新一週的資料列會同時出現在 `ytd_2026` 與 `latest_week` 兩個期間中。
+- 維度：期間+歌+週+地區；列的顆粒度：每1個期間每1個地區每1週每1首屬1列。
 
 ```sql
 CREATE OR REPLACE VIEW spotify_data.v_all_cross_scoped AS
@@ -52,7 +67,10 @@ JOIN latest
   ON b.date_interval_end = latest.latest_date;
 ```
 
-### 0-2. `v_all_cross_track_membership`：一列 = 一首歌在某期間的跨區上榜狀態
+### 0-2. `v_all_cross_track_membership`
+
+- 語意：一首歌在某個統計期間裡，究竟在哪幾個地區上過榜（回答「這首歌是只紅一地，還是能跨地區通吃」）。
+- 維度：期間+歌；列的顆粒度：每1個期間每1首屬1列。
 
 | 欄位 | 說明 |
 |---|---|
@@ -89,7 +107,10 @@ FROM flags;
 
 ## 1. 文氏圖
 
-### `v_all_cross_venn`：一列 = 某期間（`ytd_2026` / `latest_week`）一種地區集合（3 個單區 + 4 個交集）的上榜歌曲數統計
+### `v_all_cross_venn`
+
+- 語意：某個統計期間裡，每一種地區集合（3 個單區 + 4 個交集）各自涵蓋多少首歌（回答「三個市場的口味有多少重疊」）。
+- 維度：期間+地區集合；列的顆粒度：每1個期間每1種地區集合屬1列，故每1個期間貢獻 7 列。
 
 同時提供兩種計數，依社群套件要求的資料格式擇一使用：
 
@@ -158,9 +179,11 @@ JOIN (
 
 ## 2. 重疊歌曲清單（表格）
 
-### `v_all_cross_overlap_tracks`：一列 = 某期間至少在 2 區上榜的一首歌
+### `v_all_cross_overlap_tracks`
 
-N05 將兩區、三區分成四張表（cell 31–34），這裡合成一張，以 `region_combo` 篩選即可得到原本任一張表。
+- 語意：某個統計期間裡，至少在 2 個地區都上過榜的歌曲清單，附上它在各區的最佳名次、streams 與在榜週數（回答「跨地區通吃的歌，在各地紅的程度是否一致」）。
+- 維度：期間+歌；列的顆粒度：每1個期間每1首屬1列。
+- N05 將兩區、三區分成四張表（cell 31–34），這裡合成一張，以 `region_combo` 篩選即可得到原本任一張表。
 
 | 欄位 | `ytd_2026` | `latest_week` |
 |---|---|---|
@@ -202,8 +225,10 @@ GROUP BY m.period, m.region_combo, m.region_count, m.track_id, m.track_name, m.a
 
 ## 3. 三區皆上榜歌曲的名次熱圖
 
-### `v_all_cross_three_region_rank_history`：一列 = 三區皆上榜的一首歌，在某區某週的名次
+### `v_all_cross_three_region_rank_history`
 
+- 語意：三區都上過榜的歌曲，在 2026 年每一週於各地的名次走勢（回答「同一首歌在三個市場的熱度是同步起落，還是一地先紅、他地後跟」）。
+- 維度：期間+歌+地區+週；列的顆粒度：每1個期間每1首每1個地區每1週屬1列。
 - 歌曲名單依 `period` 決定（`latest_week` = N05 原本就在算的：最新一週三區皆上榜的歌）。
 - 名次軌跡一律取 2026 年全部週次，不受 `period` 限制。
 
